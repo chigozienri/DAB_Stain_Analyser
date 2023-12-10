@@ -8,7 +8,7 @@ Class related to analysis of DAB stained images
 @author: jbeckwith
 """
 import numpy as np
-import cv2
+import skimage as ski
 
 class DAB():
     def __init__(self):
@@ -22,8 +22,7 @@ class DAB():
         file is file path
         ================OUTPUT============= 
         img is opencv image """
-        image = cv2.imread(file) # read in image
-        img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) # make it the ordering everyone else uses
+        img = ski.io.imread(file) # read in image
         return img
 
     def im2double(self, img):
