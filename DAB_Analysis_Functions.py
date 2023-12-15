@@ -14,14 +14,14 @@ class DAB():
     def __init__(self):
         self = self
         return
-    
+        
     def imread(self, file):
         """ imread function
         takes RGB image and corrects openCV's ordering
         ================INPUTS============= 
         file is file path
         ================OUTPUT============= 
-        img is opencv image """
+        img is array """
         img = ski.io.imread(file) # read in image
         return img
 
@@ -49,6 +49,72 @@ class DAB():
         aMean = np.nanmean(np.multiply(image[:, :, 1], mask)) # mean of only the pixels within the masked area.
         bMean = np.nanmean(np.multiply(image[:, :, 2], mask)) # mean of only the pixels within the masked area.
         return LMean, aMean, bMean
+    
+    def pseudo_circularity(self, MajorAxisLength, MinorAxisLength):
+        """ pseudo_circularity function
+        takes major and minor axis length and computes pseudo-circularity
+        ================INPUTS============= 
+        MajorAxisLength is major axis length in pixels
+        MinorAxisLength is minor axis length in pixels
+        ================OUTPUT============= 
+        p_circ is pseudo-circularity (runs from 0--1) """
+        p_circ = np.divide(np.multiply(2, MinorAxisLength), np.add(MinorAxisLength, MajorAxisLength))
+        return p_circ
+
+    
+    def clean_nuclear_mask(self, mask):
+        """ clean_nuclear_mask function
+        takes mask, and cleans up nuclei
+        removes 3*3 (i.e. diffraction limited) objects
+        clears border, connects larger aggregates if small "holes" inside, etc
+        ================INPUTS============= 
+        mask is logical array of image mask
+        ================OUTPUT============= 
+        cleaned_mask is cleaned up mask """
+        mask_disk = 1*ski.morphology.binary_closing(mask, ski.morphology.disk(3))
+        seed = np.copy(mask_disk)
+        seed[1:-1, 1:-1] = mask_disk.max()
+        
+        mask_filled = ski.morphology.reconstruction(seed, mask_disk, method='erosion')
+        cleaned_mask = 1*ski.morphology.binary_closing(mask_filled, ski.morphology.disk(2))
+       
+        from skimage.measure import label, regionprops_table
+        label_img = label(cleaned_mask)
+        props = regionprops_table(label_img, properties=('area',
+                                                         'axis_minor_length'))
+        Area = props['area']
+        indices_toremove = np.unique(np.unique(label_img)[1:]*(Area < 45))[1:]
+        mask=np.isin(label_img,indices_toremove)
+        cleaned_mask[mask] = 0
+        return cleaned_mask
+
+    
+    def clean_protein_mask(self, mask):
+        """ clean_protein_mask function
+        takes mask, and cleans up protein aggregates
+        removes 3*3 (i.e. diffraction limited) objects
+        clears border, connects larger aggregates if small "holes" inside, etc
+        ================INPUTS============= 
+        mask is logical array of image mask
+        ================OUTPUT============= 
+        cleaned_mask is cleaned up mask """
+        mask_disk = 1*ski.morphology.binary_closing(mask, ski.morphology.disk(1))
+        seed = np.copy(mask_disk)
+        seed[1:-1, 1:-1] = mask_disk.max()
+        
+        mask_filled = ski.morphology.reconstruction(seed, mask_disk, method='erosion')
+        cleaned_mask = ski.segmentation.clear_border(mask_filled)
+        
+        from skimage.measure import label, regionprops_table
+        label_img = label(cleaned_mask)
+        props = regionprops_table(label_img, properties=('area',
+                                                         'axis_minor_length'))
+        minorA = props['axis_minor_length']
+        Area = props['area']
+        indices_toremove = np.unique(np.hstack([np.unique(label_img)[1:]*(minorA < 3), np.unique(label_img)[1:]*(Area < 9)]))[1:]
+        mask=np.isin(label_img,indices_toremove)
+        cleaned_mask[mask] = 0
+        return cleaned_mask
     
     def colourFilterLab(self, image, initial_params, rate=[0.75, 4], percentage=0.075, maxiter=30):
         """ colourFilterLab function
@@ -96,5 +162,50 @@ class DAB():
         current_params = np.array([LMean, aMean, bMean, thres])
         return image_mask, current_params
     
-    def analyse_DAB_and_cells(self, file):
-        return
+    def analyse_DAB_and_cells(self, file, asyn_params=np.array([27, 6, 5, 15]), nuclei_params=np.array([70, 1, -5, 4])):
+        """ analyse_DAB_and_cells function
+        takes file, and uses initial parameters and rate to separate out
+        coloured objects
+        then returns table with object information
+        ================INPUTS============= 
+        file is filename
+        asyn_params are initial default Lmean, aMean, bMean and threshold parameters
+        nuclei_params are initial default Lmean, aMean, bMean and threshold parameters
+        ================OUTPUT============= 
+        table_asyn is pandas array of asyn data
+        table_nuclei is pandas array of nuclei data """
+        img = ski.io.imread(file)
+        lab_Image = ski.color.rgb2lab(self.im2double(img))
+        
+        image_mask_asyn, asyn_params = self.colourFilterLab(lab_Image, asyn_params)
+        image_mask_asyn = self.clean_protein_mask(image_mask_asyn)
+        image_mask_nuclei, nucl_params = self.colourFilterLab(lab_Image, nuclei_params, rate=[1,2])
+        image_mask_nuclei = self.clean_nuclear_mask(image_mask_nuclei)
+        from skimage.measure import label, regionprops_table
+        label_img_asyn = label(image_mask_asyn)
+        props_asyn = regionprops_table(label_img_asyn, properties=('area',
+                                                         'centroid',
+                                                         'axis_major_length',
+                                                         'axis_minor_length'))
+        import pandas as pd
+        table_asyn = pd.DataFrame(props_asyn)
+        table_asyn['pseudo_circularity'] = self.pseudo_circularity(props_asyn['axis_major_length'], props_asyn['axis_minor_length'])
+        
+        label_img_nucl = label(image_mask_nuclei)
+        props_nuclei = regionprops_table(label_img_nucl, properties=('area',
+                                                         'centroid',
+                                                         'axis_major_length',
+                                                         'axis_minor_length'))
+        table_nuclei = pd.DataFrame(props_nuclei)
+        table_nuclei['pseudo_circularity'] = self.pseudo_circularity(props_nuclei['axis_major_length'], props_nuclei['axis_minor_length'])
+        return table_asyn, table_nuclei
+    
+    def get_guess(self, img, lab_image, message="select area that is just DAB-stained protein aggregate; press enter when complete"):
+        import cv2
+        r = cv2.selectROI(message, cv2.cvtColor(img, cv2.COLOR_BGR2RGB)) 
+
+        cv2.destroyAllWindows()
+        area = lab_image[int(r[1]):int(r[1]+r[3]),  
+                              int(r[0]):int(r[0]+r[2])] 
+        init_guess = np.mean(np.mean(area, axis=1), axis=0)
+        return init_guess
