@@ -1,0 +1,11 @@
+build:
+  gpu: false
+  system_packages:
+    - "libgl1-mesa-glx"
+    - "libglib2.0-0"
+  python_version: "3.10.12"
+  python_packages:
+    - "numpy==1.26.0"
+    - "skimage==0.22.0"
+    - "cv2==4.8.1"
+    - "matplotlib==3.8.0"
